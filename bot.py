@@ -3,6 +3,7 @@ import sqlite3
 import random
 import string
 import os
+import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -11,7 +12,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
 
 # ================= CONFIG =================
@@ -19,13 +20,13 @@ TOKEN = "8255403112:AAGbXkLDdJMzNXt77DbVVOUX84UCa4XmMjY"
 OWNER_ID = 8188215655
 
 FORCE_CHANNELS = ["@TITANXBOTMAKING", "@TITANXERA1"]
-PRIVATE_CHANNEL_LINK = "https://t.me/+RB79SF560HQ1NmFl"
+PRIVATE_CHANNEL_LINK = "https://t.me/+78TCYQvug8JjYmNl"
 
 REQUIRED_REFERRALS = 8
 PORT = int(os.environ.get("PORT", 8080))
 
-# ⚠️ Railway app public URL
-WEBHOOK_URL = "https://your-project.up.railway.app"
+# ⚠️ Railway public URL (CHANGE PROJECT NAME ONLY)
+WEBHOOK_URL = "https://YOUR_PROJECT_NAME.up.railway.app"
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
@@ -84,13 +85,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_joined(context.bot, user.id):
         kb = [
-            [InlineKeyboardButton("📢 Join Channel 1", url=f"https://t.me/{FORCE_CHANNELS[0][1:]}")],
-            [InlineKeyboardButton("📢 Join Channel 2", url=f"https://t.me/{FORCE_CHANNELS[1][1:]}")],
-            [InlineKeyboardButton("🔒 Private Channel (Request)", url=PRIVATE_CHANNEL_LINK)]
+            [InlineKeyboardButton("📢 Join Channel 1", url="https://t.me/TITANXBOTMAKING")],
+            [InlineKeyboardButton("📢 Join Channel 2", url="https://t.me/TITANXERA1")],
+            [InlineKeyboardButton("🔒 Private Channel (Request)", url=PRIVATE_CHANNEL_LINK)],
         ]
         await update.message.reply_text(
             "❌ Pehle sab channels join karo",
-            reply_markup=InlineKeyboardMarkup(kb)
+            reply_markup=InlineKeyboardMarkup(kb),
         )
         return
 
@@ -102,24 +103,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if args:
             try:
                 ref = int(args[0])
-                cur.execute("UPDATE users SET balance = balance + 1 WHERE user_id=?", (ref,))
+                cur.execute(
+                    "UPDATE users SET balance = balance + 1 WHERE user_id=?",
+                    (ref,),
+                )
                 db.commit()
                 await context.bot.send_message(ref, "🎉 1 referral added!")
             except:
                 pass
 
-        await context.bot.send_message(OWNER_ID, f"🆕 New user: {user.id}")
+        await context.bot.send_message(
+            OWNER_ID, f"🆕 New user joined: {user.id}"
+        )
 
     keyboard = [
         [InlineKeyboardButton("💰 Balance", callback_data="balance")],
         [InlineKeyboardButton("🔗 Invite", callback_data="invite")],
         [InlineKeyboardButton("🎁 Claim RDP", callback_data="claim")],
-        [InlineKeyboardButton("🏆 Top Rank", callback_data="top")]
+        [InlineKeyboardButton("🏆 Top Rank", callback_data="top")],
     ]
 
     await update.message.reply_text(
         "🤖 Welcome to Free RDP Bot",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 # ================= BUTTONS =================
@@ -138,7 +144,9 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif q.data == "top":
-        cur.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
+        cur.execute(
+            "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10"
+        )
         text = "🏆 TOP REFERRERS\n\n"
         for i, r in enumerate(cur.fetchall(), 1):
             text += f"{i}. {r[0]} → {r[1]}\n"
@@ -149,17 +157,23 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = cur.fetchone()[0]
 
         if bal < REQUIRED_REFERRALS:
-            await q.message.reply_text("❌ Not enough referrals")
+            await q.message.reply_text("❌ 8 referrals required")
             return
 
         cur.execute("SELECT id, data FROM rdp LIMIT 1")
         rdp = cur.fetchone()
+
         if not rdp:
-            await q.message.reply_text("❌ Stock not available")
+            await q.message.reply_text(
+                "❌ Stock not available, try again later"
+            )
             return
 
         cur.execute("DELETE FROM rdp WHERE id=?", (rdp[0],))
-        cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (REQUIRED_REFERRALS, uid))
+        cur.execute(
+            "UPDATE users SET balance = balance - ? WHERE user_id=?",
+            (REQUIRED_REFERRALS, uid),
+        )
         db.commit()
 
         await q.message.reply_text(f"🎁 Your RDP:\n\n{rdp[1]}")
@@ -169,13 +183,17 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
     cur.execute("SELECT COUNT(*) FROM rdp")
-    await update.message.reply_text(f"📦 Stock: {cur.fetchone()[0]}")
+    await update.message.reply_text(
+        f"📦 RDP Stock: {cur.fetchone()[0]}"
+    )
 
 # ================= UPLOAD =================
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == OWNER_ID:
         upload_buffer.clear()
-        await update.message.reply_text("📤 Send RDP details, /done when finished")
+        await update.message.reply_text(
+            "📤 Send RDP details (multiple), then /done"
+        )
 
 async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == OWNER_ID:
@@ -187,10 +205,10 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("INSERT INTO rdp (data) VALUES (?)", (i,))
         db.commit()
         upload_buffer.clear()
-        await update.message.reply_text("✅ RDP Uploaded")
+        await update.message.reply_text("✅ RDP stock updated")
 
-# ================= MAIN (WEBHOOK) =================
-def main():
+# ================= MAIN (HARDFIX) =================
+async def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -200,11 +218,10 @@ def main():
     app.add_handler(CommandHandler("stock", stock))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    await app.initialize()
+    await app.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
+    await app.start()
+    await app.stop()  # keeps container alive safely
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
