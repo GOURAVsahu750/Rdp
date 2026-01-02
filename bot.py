@@ -1,134 +1,133 @@
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from config import *
-from database import *
+from telegram.ext import (
+    ApplicationBuilder, ContextTypes,
+    CommandHandler, MessageHandler, filters
+)
 
-users = load_json(USERS_FILE, {})
-rdp_stock = load_json(RDP_FILE, {"rdps": []})
+import config
+import database as db
 
-# ----------------- HELPERS -----------------
+logging.basicConfig(level=logging.INFO)
 
-def save_all():
-    save_json(USERS_FILE, users)
-    save_json(RDP_FILE, rdp_stock)
+# ---------- FORCE JOIN CHECK ----------
+async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    bot = context.bot
 
-def is_joined(user_id, bot):
-    for ch in FORCE_CHANNELS:
-        try:
-            member = bot.get_chat_member(ch, user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except:
-            return False
-    return True
-
-# ----------------- START -----------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = str(user.id)
-
-    if uid not in users:
-        users[uid] = {
-            "points": 0,
-            "referred": [],
-            "redeemed": False
-        }
-
-        if context.args:
-            ref = context.args[0]
-            if ref in users and uid not in users[ref]["referred"]:
-                users[ref]["points"] += 1
-                users[ref]["referred"].append(uid)
-
-        save_all()
-
-    if not is_joined(user.id, context.bot):
-        btn = [
-            [InlineKeyboardButton("🔒 Join Private Channel", url=PRIVATE_CHANNEL_INVITE)],
-            [InlineKeyboardButton("✅ Verify", callback_data="verify")]
+    try:
+        await bot.get_chat_member(config.PUBLIC_CHANNELS[0], user_id)
+        await bot.get_chat_member(config.PUBLIC_CHANNELS[1], user_id)
+        return True
+    except:
+        keyboard = [
+            [InlineKeyboardButton("🔒 Join Private Channel", url=config.PRIVATE_CHANNEL_INVITE)],
+            [InlineKeyboardButton("📢 Public Channel 1", url=f"https://t.me/{config.PUBLIC_CHANNELS[0][1:]}")],
+            [InlineKeyboardButton("📢 Public Channel 2", url=f"https://t.me/{config.PUBLIC_CHANNELS[1][1:]}")]
         ]
         await update.message.reply_text(
             "❌ Pehle saare channels join karo",
-            reply_markup=InlineKeyboardMarkup(btn)
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return False
+
+# ---------- START / AUTO ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await force_join(update, context):
         return
 
+    user_id = update.effective_user.id
+    ref = context.args[0] if context.args else None
+
+    db.cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if not db.cur.fetchone():
+        db.cur.execute("INSERT INTO users (user_id, ref_by) VALUES (?,?)", (user_id, ref))
+        if ref:
+            db.cur.execute("UPDATE users SET points = points + 1 WHERE user_id=?", (ref,))
+        db.conn.commit()
+
+        for admin in config.ADMIN_IDS:
+            await context.bot.send_message(admin, f"🆕 New User Joined: `{user_id}`")
+
+    link = f"https://t.me/{context.bot.username}?start={user_id}"
     await update.message.reply_text(
-        f"👋 Welcome {user.first_name}\n\n"
-        f"⭐ Points: {users[uid]['points']}\n"
-        f"🎁 Required: {POINTS_REQUIRED}"
+        f"👋 Welcome\n\n"
+        f"🎯 Refer 8 users & get RDP\n"
+        f"🔗 Your referral link:\n{link}"
     )
 
-# ----------------- VERIFY -----------------
-
-async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    if is_joined(q.from_user.id, context.bot):
-        await q.message.edit_text("✅ Verified! Ab bot use karo")
-    else:
-        await q.message.edit_text("❌ Abhi bhi join nahi kiya")
-
-# ----------------- UPLOAD RDP -----------------
-
-async def uploadrdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+# ---------- UPLOAD RDP ----------
+async def upload_rdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in config.ADMIN_IDS:
         return
 
-    await update.message.reply_text("📤 RDP details bhejo (text me)")
+    rdp = " ".join(context.args)
+    if not rdp:
+        await update.message.reply_text("Usage: /uploadrdp user:pass|ip")
+        return
 
-    context.user_data["uploading"] = True
+    db.cur.execute("INSERT INTO rdp_stock (rdp) VALUES (?)", (rdp,))
+    db.conn.commit()
+    await update.message.reply_text("✅ RDP added to stock")
 
-async def receive_rdp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("uploading"):
-        rdp_stock["rdps"].append(update.message.text)
-        context.user_data["uploading"] = False
-        save_all()
-        await update.message.reply_text("✅ RDP Stock me add ho gaya")
-
-# ----------------- REDEEM -----------------
-
+# ---------- CHECK POINTS ----------
 async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_user.id)
+    user_id = update.effective_user.id
 
-    if users[uid]["redeemed"]:
+    db.cur.execute("SELECT points, redeemed FROM users WHERE user_id=?", (user_id,))
+    row = db.cur.fetchone()
+
+    if not row or row[0] < config.REF_POINTS_REQUIRED:
+        await update.message.reply_text("❌ 8 referrals required")
+        return
+
+    if row[1]:
         await update.message.reply_text("❌ Already redeemed")
         return
 
-    if users[uid]["points"] < POINTS_REQUIRED:
-        await update.message.reply_text("❌ Points insufficient")
+    db.cur.execute("SELECT id, rdp FROM rdp_stock WHERE used=0 LIMIT 1")
+    rdp = db.cur.fetchone()
+
+    if not rdp:
+        await update.message.reply_text("❌ Stock empty, try later")
         return
 
-    if not rdp_stock["rdps"]:
-        await update.message.reply_text("❌ Stock khatam")
+    db.cur.execute("UPDATE rdp_stock SET used=1 WHERE id=?", (rdp[0],))
+    db.cur.execute("UPDATE users SET redeemed=1 WHERE user_id=?", (user_id,))
+    db.conn.commit()
+
+    await update.message.reply_text(f"🎉 Your RDP:\n`{rdp[1]}`")
+
+# ---------- STOCK ----------
+async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db.cur.execute("SELECT COUNT(*) FROM rdp_stock WHERE used=0")
+    count = db.cur.fetchone()[0]
+    await update.message.reply_text(f"📦 Available RDP: {count}")
+
+# ---------- BROADCAST ----------
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in config.ADMIN_IDS:
         return
 
-    rdp = rdp_stock["rdps"].pop(0)
-    users[uid]["redeemed"] = True
-    save_all()
+    msg = " ".join(context.args)
+    db.cur.execute("SELECT user_id FROM users")
+    for u in db.cur.fetchall():
+        try:
+            await context.bot.send_message(u[0], msg)
+        except:
+            pass
 
-    await update.message.reply_text(f"🎉 Your RDP:\n\n{rdp}")
+    await update.message.reply_text("✅ Broadcast sent")
 
-# ----------------- STATS -----------------
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"👥 Users: {len(users)}\n"
-        f"🖥 RDP Stock: {len(rdp_stock['rdps'])}"
-    )
-
-# ----------------- MAIN -----------------
-
+# ---------- MAIN ----------
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("uploadrdp", uploadrdp))
+    app.add_handler(CommandHandler("uploadrdp", upload_rdp))
     app.add_handler(CommandHandler("redeem", redeem))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_rdp))
+    app.add_handler(CommandHandler("stock", stock))
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
     app.run_polling()
 
