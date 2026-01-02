@@ -3,7 +3,6 @@ import sqlite3
 import random
 import string
 import os
-import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,8 +24,8 @@ PRIVATE_CHANNEL_LINK = "https://t.me/+78TCYQvug8JjYmNl"
 REQUIRED_REFERRALS = 8
 PORT = int(os.environ.get("PORT", 8080))
 
-# ⚠️ Railway public URL (CHANGE PROJECT NAME ONLY)
-WEBHOOK_URL = "https://YOUR_PROJECT_NAME.up.railway.app"
+# Railway public URL (CHANGE PROJECT NAME ONLY)
+WEBHOOK_URL = "https://rdp-production-3cc0.up.railway.app"
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
@@ -71,8 +70,8 @@ upload_buffer = []
 async def is_joined(bot, uid):
     for ch in FORCE_CHANNELS:
         try:
-            member = await bot.get_chat_member(ch, uid)
-            if member.status in ("left", "kicked"):
+            m = await bot.get_chat_member(ch, uid)
+            if m.status in ("left", "kicked"):
                 return False
         except:
             return False
@@ -207,8 +206,8 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upload_buffer.clear()
         await update.message.reply_text("✅ RDP stock updated")
 
-# ================= MAIN (HARDFIX) =================
-async def main():
+# ================= MAIN (CORRECT) =================
+def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -218,10 +217,12 @@ async def main():
     app.add_handler(CommandHandler("stock", stock))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect))
 
-    await app.initialize()
-    await app.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
-    await app.start()
-    await app.stop()  # keeps container alive safely
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
