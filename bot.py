@@ -1,9 +1,21 @@
-import logging, sqlite3, random, string
+import logging
+import sqlite3
+import random
+import string
+import asyncio
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 # ================= CONFIG =================
-TOKEN = "8188215655:AAGbXkLDdJMzNXt77DbVVOUX84UCa4XmMjY"
+TOKEN = "8255403112:AAGbXkLDdJMzNXt77DbVVOUX84UCa4XmMjY"
 OWNER_ID = 8188215655
 
 FORCE_CHANNELS = ["@TITANXBOTMAKING", "@TITANXERA1"]
@@ -14,35 +26,59 @@ REQUIRED_REFERRALS = 8
 
 logging.basicConfig(level=logging.INFO)
 
+# ================= DATABASE =================
 db = sqlite3.connect("data.db", check_same_thread=False)
 cur = db.cursor()
 
-# ================= DATABASE =================
-cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)")
-cur.execute("CREATE TABLE IF NOT EXISTS rdp (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT)")
-cur.execute("CREATE TABLE IF NOT EXISTS redeem_codes (code TEXT PRIMARY KEY, points INTEGER)")
-cur.execute("CREATE TABLE IF NOT EXISTS states (user_id INTEGER PRIMARY KEY, state TEXT)")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    balance INTEGER DEFAULT 0
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS rdp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data TEXT
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS redeem_codes (
+    code TEXT PRIMARY KEY,
+    points INTEGER
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS states (
+    user_id INTEGER PRIMARY KEY,
+    state TEXT
+)
+""")
+
 db.commit()
 
 upload_buffer = []
 
-# ========== FORCE JOIN ==========
-async def is_joined(bot, uid):
+# ================= FORCE JOIN =================
+async def is_joined(bot, uid: int) -> bool:
     for ch in FORCE_CHANNELS:
         try:
-            m = await bot.get_chat_member(ch, uid)
-            if m.status in ["left", "kicked"]:
+            member = await bot.get_chat_member(ch, uid)
+            if member.status in ("left", "kicked"):
                 return False
-        except:
+        except Exception:
             return False
     return True
 
-# ========== START ==========
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
+    user = update.effective_user
     args = context.args
 
-    if not await is_joined(context.bot, u.id):
+    if not await is_joined(context.bot, user.id):
         kb = [
             [InlineKeyboardButton("📢 Join Channel 1", url=f"https://t.me/{FORCE_CHANNELS[0][1:]}")],
             [InlineKeyboardButton("📢 Join Channel 2", url=f"https://t.me/{FORCE_CHANNELS[1][1:]}")],
@@ -55,28 +91,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    cur.execute("SELECT * FROM users WHERE user_id=?", (u.id,))
+    cur.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,))
     if not cur.fetchone():
-        cur.execute("INSERT INTO users VALUES (?,0)", (u.id,))
+        cur.execute("INSERT INTO users (user_id, balance) VALUES (?,0)", (user.id,))
         db.commit()
 
         if args:
-            ref = int(args[0])
-            cur.execute("UPDATE users SET balance = balance + 1 WHERE user_id=?", (ref,))
-            db.commit()
-            await context.bot.send_message(ref, "🎉 1 referral added!")
+            try:
+                ref = int(args[0])
+                cur.execute("UPDATE users SET balance = balance + 1 WHERE user_id=?", (ref,))
+                db.commit()
+                await context.bot.send_message(ref, "🎉 1 referral added!")
+            except:
+                pass
 
-        await context.bot.send_message(OWNER_ID, f"🆕 New user joined: {u.id}")
+        await context.bot.send_message(OWNER_ID, f"🆕 New user joined: {user.id}")
 
-    kb = [
+    keyboard = [
         [InlineKeyboardButton("💰 Balance", callback_data="balance")],
         [InlineKeyboardButton("🔗 Invite", callback_data="invite")],
         [InlineKeyboardButton("🎁 Claim RDP", callback_data="claim")],
         [InlineKeyboardButton("🏆 Top Rank", callback_data="top")]
     ]
-    await update.message.reply_text("🤖 Welcome to Free RDP Bot", reply_markup=InlineKeyboardMarkup(kb))
 
-# ========== BUTTONS ==========
+    await update.message.reply_text(
+        "🤖 Welcome to Free RDP Bot",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# ================= BUTTONS =================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
@@ -92,30 +135,29 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif q.data == "top":
-        cur.execute("SELECT user_id,balance FROM users ORDER BY balance DESC LIMIT 10")
-        txt = "🏆 TOP REFERRERS\n\n"
-        for i,u in enumerate(cur.fetchall(),1):
-            txt += f"{i}. {u[0]} → {u[1]}\n"
-        await q.message.reply_text(txt)
+        cur.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
+        text = "🏆 TOP REFERRERS\n\n"
+        for i, row in enumerate(cur.fetchall(), 1):
+            text += f"{i}. {row[0]} → {row[1]}\n"
+        await q.message.reply_text(text)
 
     elif q.data == "claim":
-        # balance check
         cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-        bal = cur.fetchone()[0]
+        balance = cur.fetchone()[0]
 
-        if bal < REQUIRED_REFERRALS:
+        if balance < REQUIRED_REFERRALS:
             await q.message.reply_text(f"❌ Need {REQUIRED_REFERRALS} referrals")
             return
 
-        # RDP STOCK CHECK
+        # RDP STOCK
         cur.execute("SELECT id, data FROM rdp ORDER BY id ASC LIMIT 1")
-        r = cur.fetchone()
+        rdp = cur.fetchone()
 
-        if not r:
+        if not rdp:
             await q.message.reply_text("❌ Stock not available, try again later")
             return
 
-        rdp_id, rdp_data = r
+        rdp_id, rdp_data = rdp
 
         # CUT POINTS
         cur.execute(
@@ -129,7 +171,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await q.message.reply_text(f"🎁 Your RDP:\n\n{rdp_data}")
 
-# ========== UPLOAD ==========
+# ================= UPLOAD =================
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == OWNER_ID:
         upload_buffer.clear()
@@ -137,23 +179,18 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    text = update.message.text
 
-    # REDEEM STATE
     cur.execute("SELECT state FROM states WHERE user_id=?", (uid,))
-    st = cur.fetchone()
+    state = cur.fetchone()
 
-    if st and st[0] == "redeem_wait":
-        code = update.message.text.strip()
-        cur.execute("SELECT points FROM redeem_codes WHERE code=?", (code,))
+    if state and state[0] == "redeem_wait":
+        cur.execute("SELECT points FROM redeem_codes WHERE code=?", (text,))
         r = cur.fetchone()
 
         if r:
-            cur.execute(
-                "UPDATE users SET balance=balance+? WHERE user_id=?",
-                (r[0], uid)
-            )
-            cur.execute("DELETE FROM redeem_codes WHERE code=?", (code,))
-            db.commit()
+            cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (r[0], uid))
+            cur.execute("DELETE FROM redeem_codes WHERE code=?", (text,))
             await update.message.reply_text(f"✅ Redeemed {r[0]} points!")
         else:
             await update.message.reply_text("❌ Invalid or already used code")
@@ -162,9 +199,8 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         return
 
-    # ADMIN UPLOAD COLLECT
     if uid == OWNER_ID:
-        upload_buffer.append(update.message.text)
+        upload_buffer.append(text)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == OWNER_ID:
@@ -174,31 +210,33 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upload_buffer.clear()
         await update.message.reply_text("✅ RDP Stock Updated")
 
-# ========== REDEEM ==========
+# ================= REDEEM =================
 async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute(
-        "INSERT OR REPLACE INTO states VALUES (?,?)",
+        "INSERT OR REPLACE INTO states (user_id, state) VALUES (?,?)",
         (update.effective_user.id, "redeem_wait")
     )
     db.commit()
     await update.message.reply_text("🎟 Send redeem code")
 
-# ========== CREATE REDEEM ==========
+# ================= CREATE REDEEM =================
 async def createredeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
-    c, p = int(context.args[0]), int(context.args[1])
-    codes = []
 
-    for _ in range(c):
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        cur.execute("INSERT INTO redeem_codes VALUES (?,?)", (code, p))
+    count = int(context.args[0])
+    points = int(context.args[1])
+
+    codes = []
+    for _ in range(count):
+        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        cur.execute("INSERT INTO redeem_codes VALUES (?,?)", (code, points))
         codes.append(code)
 
     db.commit()
     await update.message.reply_text("🎟 Redeem Codes:\n" + "\n".join(codes))
 
-# ========== MAIN ==========
+# ================= MAIN (FIXED FOR RAILWAY) =================
 def main():
     app = Application.builder().token(TOKEN).build()
 
@@ -210,7 +248,8 @@ def main():
     app.add_handler(CommandHandler("createredeem", createredeem))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect))
 
-    app.run_polling()
+    # ✅ RAILWAY SAFE
+    app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
     main()
